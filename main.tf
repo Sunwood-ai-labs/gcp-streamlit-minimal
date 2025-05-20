@@ -1,29 +1,30 @@
-# Terraform configuration for deploying a Streamlit application on a Google Compute Engine instance.
-
-# Specifies the Google Cloud provider.
+# プロバイダーの設定
 provider "google" {
-  project = var.project_id # GCP Project ID
-  region  = var.region     # Region for resource deployment
-  zone    = var.zone       # Zone for resource deployment
+  project = "your-project-id"  # あなたのプロジェクトIDに変更してください
+  region  = "asia-northeast1"
+  zone    = "asia-northeast1-a"
 }
 
-# Defines the Google Compute Engine instance using a local module.
-# This module encapsulates the instance configuration details.
-module "gce_instance" {
-  source = "./modules/gce_instance" # Path to the local module
+# Compute Engineインスタンスの作成
+resource "google_compute_instance" "streamlit" {
+  name         = "streamlit"
+  machine_type = "e2-micro"
 
-  instance_name   = var.instance_name   # Name of the GCE instance
-  machine_type    = var.machine_type    # Machine type for the GCE instance
-  boot_disk_image = var.image           # Image for the instance's boot disk
-  boot_disk_size  = var.disk_size       # Size of the boot disk in GB
-  tags            = ["streamlit-server"] # Network tags to apply to the instance, used by firewall rules.
+  boot_disk {
+    initialize_params {
+      image = "debian-cloud/debian-11"
+      size  = 10  # GBサイズ
+    }
+  }
 
-  # For enhanced security, consider creating a dedicated service account with minimal permissions
-  # and providing its email via the 'service_account_email' variable in this module block.
-  # e.g., service_account_email = "your-custom-sa@your-project-id.iam.gserviceaccount.com"
-  # service_account_email = null # This module input defaults to null, so the GCE default SA will be used.
+  network_interface {
+    network = "default"
+    access_config {
+      # 外部IPを自動割り当て
+    }
+  }
 
-  # Startup script to install Streamlit and run a sample application.
+  # メタデータ（スタートアップスクリプト）
   metadata_startup_script = <<-EOF
     #!/bin/bash
     set -e
@@ -50,47 +51,38 @@ module "gce_instance" {
     # Streamlitの起動
     # バックグラウンドで実行し、ログをファイルに出力
     nohup streamlit run /home/app.py \
-      --server.port=${var.streamlit_port} \
+      --server.port=8501 \
       --server.address=0.0.0.0 \
       > /var/log/streamlit.log 2>&1 &
   EOF
 
-  service_account_scopes = ["cloud-platform"] # Scopes for the service account (default or custom)
+  # 必要に応じてサービスアカウントを設定
+  service_account {
+    scopes = ["cloud-platform"]
+  }
+
+  # タグの設定（ファイアウォールルールで使用）
+  tags = ["streamlit-server"]
 }
 
-# Firewall rule to allow TCP traffic to the Streamlit application port.
+# ファイアウォール設定
 resource "google_compute_firewall" "streamlit" {
-  name    = "allow-streamlit"     # Name of the firewall rule
-  network = "default"             # Network to which the rule applies
+  name    = "allow-streamlit"
+  network = "default"
 
   allow {
     protocol = "tcp"
-    ports    = [var.streamlit_port] # Allows traffic on the Streamlit port (default 8501)
+    ports    = ["8501"]
   }
 
-  # Applies this rule only to instances with the "streamlit-server" tag.
+  # Streamlitサーバーを持つインスタンスにのみ適用
   target_tags = ["streamlit-server"]
   
-  # IMPORTANT: Restrict this to your IP address for security.
-  # TODO: Replace YOUR_IP_ADDRESS/32 with your actual IP address or a specific range.
-  source_ranges = ["YOUR_IP_ADDRESS/32"] # Allows traffic from the specified IP range.
+  # 任意のIPからのアクセスを許可
+  source_ranges = ["0.0.0.0/0"]
 }
 
-# Firewall rule to allow TCP traffic for SSH access.
-resource "google_compute_firewall" "allow-ssh" {
-  name    = "allow-ssh"             # Name of the firewall rule
-  network = "default"             # Network to which the rule applies (consistent with GCE module)
-
-  allow {
-    protocol = "tcp"
-    ports    = [var.ssh_port]     # Allows traffic on the SSH port (default 22)
-  }
-
-  # Applies this rule only to instances with the "streamlit-server" tag.
-  target_tags   = ["streamlit-server"]
-  source_ranges = ["0.0.0.0/0"]      # Allows SSH traffic from any IP address.
-                                     # Consider restricting this for enhanced security if needed.
+# 出力の設定
+output "streamlit_url" {
+  value = "http://${google_compute_instance.streamlit.network_interface[0].access_config[0].nat_ip}:8501"
 }
-
-# Outputs are defined in outputs.tf.
-# This comment is to signify the end of resource definitions in this file.
